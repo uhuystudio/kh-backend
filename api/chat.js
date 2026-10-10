@@ -91,9 +91,10 @@ export default async function handler(req, res) {
     }
 
     return res.status(response.status).json({
-      ...data,
-      usage: { used: user.used, limit: user.limit, premium: user.premium }
-    });
+  ...data,
+  finish_reason: data.choices && data.choices[0] ? data.choices[0].finish_reason : "stop",
+  usage: { used: user.used, limit: user.limit, premium: user.premium }
+});
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
