@@ -1,38 +1,67 @@
-const users = new Map();
+import { initializeApp, cert, getApps } from "firebase-admin/app";
+import { getFirestore } from "firebase-admin/firestore";
+import { getAuth } from "firebase-admin/auth";
 
-function getUser(ip) {
-  let u = users.get(ip);
-  const now = Date.now();
-  const dayMs = 24 * 60 * 60 * 1000;
-
-  if (!u) {
-    u = { used: 0, limit: 10, start: now };
-  }
-
-  if (now - u.start > dayMs) {
-    u.used = 0;
-    u.start = now;
-  }
-
-  return u;
+function initFirebase() {
+  if (getApps().length) return;
+  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+  initializeApp({
+    credential: cert(serviceAccount)
+  });
 }
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    const ip = req.headers["x-forwarded-for"] || req.headers["x-real-ip"] || "unknown";
-    const u = getUser(ip);
+    initFirebase();
+    const db = getFirestore();
 
-    if (u.used >= u.limit) {
+    const authHeader = req.headers["authorization"] || "";
+    const token = authHeader.replace("Bearer ", "");
+    if (!token) return res.status(401).json({ error: "No token" });
+
+    let decoded;
+    try {
+      decoded = await getAuth().verifyIdToken(token);
+    } catch (e) {
+      return res.status(401).json({ error: "Invalid token" });
+    }
+
+    const email = decoded.email;
+    const userRef = db.collection("users").doc(email);
+    const userDoc = await userRef.get();
+
+    const now = Date.now();
+    const dayMs = 24 * 60 * 60 * 1000;
+    let user;
+
+    if (!userDoc.exists) {
+      user = { email: email, used: 0, limit: 10, start: now, premium: false, premiumUntil: 0 };
+      await userRef.set(user);
+    } else {
+      user = userDoc.data();
+      if (now - user.start > dayMs) {
+        user.used = 0;
+        user.start = now;
+      }
+    }
+
+    if (user.premium && now > user.premiumUntil) {
+      user.premium = false;
+      user.limit = 10;
+    }
+
+    if (user.used >= user.limit) {
+      await userRef.update({ used: user.used, start: user.start });
       return res.status(429).json({
         error: "Limit harian habis",
-        usage: { used: u.used, limit: u.limit }
+        usage: { used: user.used, limit: user.limit, premium: user.premium }
       });
     }
 
@@ -57,13 +86,13 @@ export default async function handler(req, res) {
     const data = await response.json();
 
     if (response.ok) {
-      u.used++;
-      users.set(ip, u);
+      user.used++;
+      await userRef.update({ used: user.used, start: user.start });
     }
 
     return res.status(response.status).json({
       ...data,
-      usage: { used: u.used, limit: u.limit }
+      usage: { used: user.used, limit: user.limit, premium: user.premium }
     });
   } catch (err) {
     return res.status(500).json({ error: err.message });
