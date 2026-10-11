@@ -2,6 +2,23 @@ import { initializeApp, cert, getApps } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
 
+/* ===== BLOKIR EMAIL TEMPORARY ===== */
+const BLOCKED_DOMAINS = [
+  "mailinator.com","tempmail.com","guerrillamail.com",
+  "10minutemail.com","throwawaymail.com","yopmail.com",
+  "sharklasers.com","grr.la","guerrillamailblock.com",
+  "temp-mail.org","fakeinbox.com","dispostable.com",
+  "mailnesia.com","trashmail.com","maildrop.cc",
+  "getnada.com","mailcatch.com","tempinbox.com",
+  "mintemail.com","spamgourmet.com","trash-mail.com"
+];
+
+/* ===== LIMIT PER TIER ===== */
+const TIER_LIMITS = { free: 10, basic: 50, pro: 200, ultra: 500 };
+
+/* ===== OWNER EMAIL ===== */
+const OWNER_EMAIL = "uhuystudio.1@gmail.com";
+
 function initFirebase() {
   if (getApps().length) return;
   const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -22,6 +39,7 @@ export default async function handler(req, res) {
     initFirebase();
     const db = getFirestore();
 
+    /* ===== VERIFIKASI TOKEN FIREBASE ===== */
     const authHeader = req.headers["authorization"] || "";
     const token = authHeader.replace("Bearer ", "");
     if (!token) return res.status(401).json({ error: "No token" });
@@ -34,6 +52,20 @@ export default async function handler(req, res) {
     }
 
     const email = decoded.email;
+    if (!email) return res.status(400).json({ error: "Email tidak ditemukan" });
+
+    /* ===== BLOKIR EMAIL TEMPORARY ===== */
+    const emailDomain = email.split("@")[1]?.toLowerCase();
+    if (BLOCKED_DOMAINS.includes(emailDomain)) {
+      return res.status(403).json({
+        error: "Email temporary tidak diizinkan. Pakai email asli atau login Google."
+      });
+    }
+
+    /* ===== OWNER CHECK ===== */
+    const isOwner = email === OWNER_EMAIL;
+
+    /* ===== AMBIL DATA USER ===== */
     const userRef = db.collection("users").doc(email);
     const userDoc = await userRef.get();
 
@@ -42,32 +74,60 @@ export default async function handler(req, res) {
     let user;
 
     if (!userDoc.exists) {
-      user = { email: email, used: 0, limit: 10, start: now, premium: false, premiumUntil: 0 };
+      user = {
+        email: email,
+        used: 0,
+        limit: 10,
+        start: now,
+        premium: false,
+        premiumUntil: 0,
+        tier: "free"
+      };
       await userRef.set(user);
     } else {
       user = userDoc.data();
+
+      // Reset harian
       if (now - user.start > dayMs) {
         user.used = 0;
         user.start = now;
       }
+
+      // Cek premium expired
+      if (user.premium && user.premiumUntil && now > user.premiumUntil) {
+        user.premium = false;
+        user.tier = "free";
+        user.limit = 10;
+        await userRef.update({
+          premium: false,
+          tier: "free",
+          limit: 10
+        });
+      }
+
+      // Update limit sesuai tier
+      const currentTier = user.tier || "free";
+      const tierLimit = TIER_LIMITS[currentTier] || 10;
+      if (user.limit !== tierLimit) {
+        user.limit = tierLimit;
+        await userRef.update({ limit: tierLimit });
+      }
     }
 
-    if (user.premium && now > user.premiumUntil) {
-      user.premium = false;
-      user.limit = 10;
-    }
-
-    if (user.used >= user.limit) {
+    /* ===== CEK LIMIT (OWNER SKIP) ===== */
+    if (!isOwner && user.used >= user.limit) {
       await userRef.update({ used: user.used, start: user.start });
       return res.status(429).json({
         error: "Limit harian habis",
-        usage: { used: user.used, limit: user.limit, premium: user.premium }
+        usage: { used: user.used, limit: user.limit, premium: user.premium, tier: user.tier }
       });
     }
 
+    /* ===== VALIDASI MESSAGES ===== */
     const messages = req.body.messages || [];
     if (!messages.length) return res.status(400).json({ error: "No messages" });
 
+    /* ===== PANGGIL GROQ API ===== */
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -79,23 +139,32 @@ export default async function handler(req, res) {
         messages: messages,
         stream: false,
         temperature: 1.0,
-        max_tokens: 2048,
+        max_tokens: isOwner ? 8192 : 2048,
       }),
     });
 
     const data = await response.json();
 
-    if (response.ok) {
+    /* ===== UPDATE USAGE ===== */
+    if (response.ok && !isOwner) {
       user.used++;
       await userRef.update({ used: user.used, start: user.start });
     }
 
+    /* ===== RETURN RESPONSE ===== */
     return res.status(response.status).json({
-  ...data,
-  finish_reason: data.choices && data.choices[0] ? data.choices[0].finish_reason : "stop",
-  usage: { used: user.used, limit: user.limit, premium: user.premium }
-});
+      ...data,
+      finish_reason: data.choices && data.choices[0] ? data.choices[0].finish_reason : "stop",
+      usage: {
+        used: user.used,
+        limit: user.limit,
+        premium: user.premium,
+        tier: user.tier,
+        isOwner: isOwner
+      }
+    });
+
   } catch (err) {
     return res.status(500).json({ error: err.message });
-      }
-}
+  }
+                     }
