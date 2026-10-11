@@ -2,16 +2,28 @@ import { initializeApp, cert, getApps } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
 
-/* ===== BLOKIR EMAIL TEMPORARY ===== */
-const BLOCKED_DOMAINS = [
-  "mailinator.com","tempmail.com","guerrillamail.com",
-  "10minutemail.com","throwawaymail.com","yopmail.com",
-  "sharklasers.com","grr.la","guerrillamailblock.com",
-  "temp-mail.org","fakeinbox.com","dispostable.com",
-  "mailnesia.com","trashmail.com","maildrop.cc",
-  "getnada.com","mailcatch.com","tempinbox.com",
-  "mintemail.com","spamgourmet.com","trash-mail.com"
-];
+/* ===== OWNER CHECK ===== */
+const OWNER_EMAIL = "uhuystudio.1@gmail.com";
+const isOwner = email === OWNER_EMAIL;
+
+/* ===== BLOKIR EMAIL TEMPORARY (OWNER SKIP) ===== */
+if (!isOwner) {
+  const emailDomain = email.split("@")[1]?.toLowerCase();
+  if (BLOCKED_DOMAINS.includes(emailDomain)) {
+    return res.status(403).json({
+      error: "Email temporary tidak diizinkan. Pakai email asli atau login Google."
+    });
+  }
+
+  /* ===== CEK BLOCKLIST DARI FIRESTORE ===== */
+  const blockedDoc = await db.collection("blocked_emails").doc(email).get();
+  if (blockedDoc.exists) {
+    const reason = blockedDoc.data().reason || "Tidak disebutkan";
+    return res.status(403).json({
+      error: "Email kamu diblokir. Alasan: " + reason
+    });
+  }
+}
 
 /* ===== LIMIT PER TIER ===== */
 const TIER_LIMITS = { free: 10, basic: 50, pro: 200, ultra: 500 };
