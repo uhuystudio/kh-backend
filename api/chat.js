@@ -2,28 +2,16 @@ import { initializeApp, cert, getApps } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
 
-/* ===== OWNER CHECK ===== */
-const OWNER_EMAIL = "uhuystudio.1@gmail.com";
-const isOwner = email === OWNER_EMAIL;
-
-/* ===== BLOKIR EMAIL TEMPORARY (OWNER SKIP) ===== */
-if (!isOwner) {
-  const emailDomain = email.split("@")[1]?.toLowerCase();
-  if (BLOCKED_DOMAINS.includes(emailDomain)) {
-    return res.status(403).json({
-      error: "Email temporary tidak diizinkan. Pakai email asli atau login Google."
-    });
-  }
-
-  /* ===== CEK BLOCKLIST DARI FIRESTORE ===== */
-  const blockedDoc = await db.collection("blocked_emails").doc(email).get();
-  if (blockedDoc.exists) {
-    const reason = blockedDoc.data().reason || "Tidak disebutkan";
-    return res.status(403).json({
-      error: "Email kamu diblokir. Alasan: " + reason
-    });
-  }
-}
+/* ===== BLOKIR EMAIL TEMPORARY ===== */
+const BLOCKED_DOMAINS = [
+  "mailinator.com","tempmail.com","guerrillamail.com",
+  "10minutemail.com","throwawaymail.com","yopmail.com",
+  "sharklasers.com","grr.la","guerrillamailblock.com",
+  "temp-mail.org","fakeinbox.com","dispostable.com",
+  "mailnesia.com","trashmail.com","maildrop.cc",
+  "getnada.com","mailcatch.com","tempinbox.com",
+  "mintemail.com","spamgourmet.com","trash-mail.com"
+];
 
 /* ===== LIMIT PER TIER ===== */
 const TIER_LIMITS = { free: 10, basic: 50, pro: 200, ultra: 500 };
@@ -31,6 +19,7 @@ const TIER_LIMITS = { free: 10, basic: 50, pro: 200, ultra: 500 };
 /* ===== OWNER EMAIL ===== */
 const OWNER_EMAIL = "uhuystudio.1@gmail.com";
 
+/* ===== INIT FIREBASE ===== */
 function initFirebase() {
   if (getApps().length) return;
   const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -51,7 +40,7 @@ export default async function handler(req, res) {
     initFirebase();
     const db = getFirestore();
 
-    /* ===== VERIFIKASI TOKEN FIREBASE ===== */
+    /* ===== VERIFIKASI TOKEN ===== */
     const authHeader = req.headers["authorization"] || "";
     const token = authHeader.replace("Bearer ", "");
     if (!token) return res.status(401).json({ error: "No token" });
@@ -66,16 +55,27 @@ export default async function handler(req, res) {
     const email = decoded.email;
     if (!email) return res.status(400).json({ error: "Email tidak ditemukan" });
 
-    /* ===== BLOKIR EMAIL TEMPORARY ===== */
-    const emailDomain = email.split("@")[1]?.toLowerCase();
-    if (BLOCKED_DOMAINS.includes(emailDomain)) {
-      return res.status(403).json({
-        error: "Email temporary tidak diizinkan. Pakai email asli atau login Google."
-      });
-    }
-
     /* ===== OWNER CHECK ===== */
     const isOwner = email === OWNER_EMAIL;
+
+    /* ===== BLOKIR EMAIL TEMPORARY (OWNER SKIP) ===== */
+    if (!isOwner) {
+      const emailDomain = email.split("@")[1]?.toLowerCase();
+      if (BLOCKED_DOMAINS.includes(emailDomain)) {
+        return res.status(403).json({
+          error: "Email temporary tidak diizinkan. Pakai email asli atau login Google."
+        });
+      }
+
+      /* ===== CEK BLOCKLIST FIRESTORE ===== */
+      const blockedDoc = await db.collection("blocked_emails").doc(email).get();
+      if (blockedDoc.exists) {
+        const reason = blockedDoc.data().reason || "Tidak disebutkan";
+        return res.status(403).json({
+          error: "Email kamu diblokir. Alasan: " + reason
+        });
+      }
+    }
 
     /* ===== AMBIL DATA USER ===== */
     const userRef = db.collection("users").doc(email);
@@ -131,7 +131,12 @@ export default async function handler(req, res) {
       await userRef.update({ used: user.used, start: user.start });
       return res.status(429).json({
         error: "Limit harian habis",
-        usage: { used: user.used, limit: user.limit, premium: user.premium, tier: user.tier }
+        usage: {
+          used: user.used,
+          limit: user.limit,
+          premium: user.premium,
+          tier: user.tier
+        }
       });
     }
 
@@ -139,8 +144,8 @@ export default async function handler(req, res) {
     const messages = req.body.messages || [];
     if (!messages.length) return res.status(400).json({ error: "No messages" });
 
-    /* ===== PANGGIL GROQ API ===== */
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    /* ===== PANGGIL GROQ ===== */
+    const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -155,16 +160,16 @@ export default async function handler(req, res) {
       }),
     });
 
-    const data = await response.json();
+    const data = await groqRes.json();
 
     /* ===== UPDATE USAGE ===== */
-    if (response.ok && !isOwner) {
+    if (groqRes.ok && !isOwner) {
       user.used++;
       await userRef.update({ used: user.used, start: user.start });
     }
 
-    /* ===== RETURN RESPONSE ===== */
-    return res.status(response.status).json({
+    /* ===== RETURN ===== */
+    return res.status(groqRes.status).json({
       ...data,
       finish_reason: data.choices && data.choices[0] ? data.choices[0].finish_reason : "stop",
       usage: {
@@ -179,4 +184,4 @@ export default async function handler(req, res) {
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
-                     }
+ }
