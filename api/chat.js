@@ -36,6 +36,46 @@ const JAILBREAK_KEYWORDS = [
   "ignore safety","ignore ethics","ignore moral","abaikan moral","abaikan etika"
 ];
 
+/* ===== MEMORY SYSTEM ===== */
+async function getMemory(db, email) {
+  try {
+    const memDoc = await db.collection("memories").doc(email).get();
+    if (memDoc.exists) {
+      const data = memDoc.data();
+      return data.summary || "";
+    }
+  } catch (e) {
+    console.log("Memory error:", e);
+  }
+  return "";
+}
+
+async function updateMemory(db, email, userMsg, aiReply) {
+  try {
+    const memRef = db.collection("memories").doc(email);
+    const memDoc = await memRef.get();
+    
+    let current = { summary: "", lastUpdate: Date.now(), chatCount: 0 };
+    if (memDoc.exists) {
+      current = memDoc.data();
+    }
+    
+    const newEntry = "User: " + userMsg.substring(0, 100) + " | AI: " + aiReply.substring(0, 100);
+    let newSummary = (current.summary || "") + "\n" + newEntry;
+    
+    if (newSummary.length > 1000) {
+      newSummary = newSummary.slice(-1000);
+    }
+    
+    await memRef.set({
+      summary: newSummary,
+      lastUpdate: Date.now(),
+      chatCount: (current.chatCount || 0) + 1
+    });
+  } catch (e) {
+    console.log("Update memory error:", e);
+  }
+}
 /* ===== IDENTITY PROMPT ===== */
 const IDENTITY_PROMPT = `ATURAN IDENTITAS:
 - Kalau ditanya "kamu siapa" → jawab: "Aku KH AI, asisten AI yang dikembangkan oleh Uhuy Studio & Kilzzen Community."
@@ -177,13 +217,17 @@ export default async function handler(req, res) {
       }
     }
 
-    /* ===== GABUNGIN SYSTEM PROMPT ===== */
-    let finalMessages;
-    if (messages[0] && messages[0].role === "system") {
-      finalMessages = [{ role: "system", content: messages[0].content + "\n\n" + IDENTITY_PROMPT }].concat(messages.slice(1));
-    } else {
-      finalMessages = [{ role: "system", content: IDENTITY_PROMPT }].concat(messages);
-    }
+  /* ===== AMBIL MEMORY ===== */
+const memory = await getMemory(db, email);
+const memoryPrompt = memory ? "\n\nMEMORY (percakapan sebelumnya):\n" + memory : "";
+
+/* ===== GABUNGIN SYSTEM PROMPT + MEMORY ===== */
+let finalMessages;
+if (messages[0] && messages[0].role === "system") {
+  finalMessages = [{ role: "system", content: messages[0].content + "\n\n" + IDENTITY_PROMPT + memoryPrompt }].concat(messages.slice(1));
+} else {
+  finalMessages = [{ role: "system", content: IDENTITY_PROMPT + memoryPrompt }].concat(messages);
+}
 
     /* ===== PILIH API KEY (OWNER PAKAI KEY TERPISAH) ===== */
 const groqKey = isOwner ? process.env.GROQ_KEY_OWNER : process.env.GROQ_KEY;
@@ -206,10 +250,20 @@ const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
 
     const data = await groqRes.json();
 
-    if (groqRes.ok && !isOwner) {
-      user.used++;
-      await userRef.update({ used: user.used, start: user.start });
-    }
+/* ===== UPDATE USAGE ===== */
+if (groqRes.ok && !isOwner) {
+  user.used++;
+  await userRef.update({ used: user.used, start: user.start });
+}
+
+/* ===== SIMPAN MEMORY ===== */
+if (groqRes.ok && data.choices && data.choices[0] && data.choices[0].message) {
+  const userMsg = messages.filter(m => m.role === "user").slice(-1)[0];
+  const aiReply = data.choices[0].message.content;
+  if (userMsg) {
+    await updateMemory(db, email, userMsg.content, aiReply);
+  }
+  }
 
     return res.status(groqRes.status).json({
       ...data,
