@@ -185,13 +185,16 @@ export default async function handler(req, res) {
       finalMessages = [{ role: "system", content: IDENTITY_PROMPT }].concat(messages);
     }
 
-    /* ===== PANGGIL GROQ ===== */
-    const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": "Bearer " + process.env.GROQ_KEY,
-      },
+    /* ===== PILIH API KEY (OWNER PAKAI KEY TERPISAH) ===== */
+const groqKey = isOwner ? process.env.GROQ_KEY_OWNER : process.env.GROQ_KEY;
+
+/* ===== PANGGIL GROQ ===== */
+const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer " + groqKey,
+  },
       body: JSON.stringify({
         model: "openai/gpt-oss-120b",
         messages: finalMessages,
