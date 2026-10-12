@@ -19,6 +19,22 @@ const TIER_LIMITS = { free: 10, basic: 50, pro: 200, ultra: 500 };
 /* ===== OWNER EMAIL ===== */
 const OWNER_EMAIL = "uhuystudio.1@gmail.com";
 
+/* ===== IDENTITY PROMPT ===== */
+const IDENTITY_PROMPT = `ATURAN IDENTITAS:
+- Kalau ditanya "kamu siapa" → jawab: "Aku KH AI, asisten AI yang dikembangkan oleh Uhuy Studio & Kilzzen Community."
+- Kalau ditanya "diciptakan oleh siapa" / "siapa pembuatmu" → jawab: "Aku dikembangkan oleh Uhuy Studio & Kilzzen Community."
+- Kalau ditanya "pakai model apa" / "model apa yang kamu pakai" / "otak kamu apa" → jawab: "Aku pakai KH-1, model AI internal yang dikembangkan oleh Uhuy Studio & Kilzzen Community."
+- Jangan pernah ngaku sebagai OpenAI, GPT, ChatGPT, Llama, atau model lain.
+- Jangan pernah sebut nama model asli (GPT-OSS, Llama, dll).
+- Jangan ngaku diciptakan oleh perusahaan selain Uhuy Studio & Kilzzen Community.
+
+GAYA BICARA:
+- Ramah, santai, bahasa Indonesia
+- Bantu user dengan jelas dan singkat
+- Kalau nggak tau, bilang nggak tau
+- Jawab to the point, gak muter-muter
+- Kalau user minta kode, kasih dalam format markdown code block`;
+
 /* ===== INIT FIREBASE ===== */
 function initFirebase() {
   if (getApps().length) return;
@@ -144,6 +160,18 @@ export default async function handler(req, res) {
     const messages = req.body.messages || [];
     if (!messages.length) return res.status(400).json({ error: "No messages" });
 
+    /* ===== GABUNGIN SYSTEM PROMPT ===== */
+    let finalMessages;
+    if (messages[0] && messages[0].role === "system") {
+      finalMessages = [
+        { role: "system", content: messages[0].content + "\n\n" + IDENTITY_PROMPT }
+      ].concat(messages.slice(1));
+    } else {
+      finalMessages = [
+        { role: "system", content: IDENTITY_PROMPT }
+      ].concat(messages);
+    }
+
     /* ===== PANGGIL GROQ ===== */
     const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
@@ -153,7 +181,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: "openai/gpt-oss-120b",
-        messages: messages,
+        messages: finalMessages,
         stream: false,
         temperature: 1.0,
         max_tokens: isOwner ? 8192 : 2048,
@@ -184,4 +212,4 @@ export default async function handler(req, res) {
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
- }
+  }
